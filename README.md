@@ -14,4 +14,4 @@ cd <repo>
 pip install -e .
 ```
 
-Then you should be able to import it as a package in 
+Then you should be able to import it as a package.

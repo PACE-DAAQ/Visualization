@@ -10,6 +10,7 @@ dependencies = [
     "numpy>=1.24",
     "pandas>=2.0",
     "uxarray>=2025.05.2",
+    "earthaccess>=0.17.0",
 ]
 
 [tool.setuptools.packages.find]
