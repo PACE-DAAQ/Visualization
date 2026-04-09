@@ -1,5 +1,6 @@
 # utils/colormap.py
 from matplotlib.colors import LinearSegmentedColormap
+from daaq.utils.paths import COLORMAPS_DIR
 
 white_gist_earth = LinearSegmentedColormap.from_list('white_gist_earth', [
     (0,     (1,        1,        1       )),
@@ -11,35 +12,39 @@ white_gist_earth = LinearSegmentedColormap.from_list('white_gist_earth', [
     (1,     (0.013067, 0.000000, 0.348089)),
     ], N=256)
 
-def setup_cmap(name, valuelst, idxlst):
-    #
-    # Set colormap through NCL colormap and index
-    #
-    import os, platform
-    from pathlib import Path
+def available_cmaps():
+    """Return available colormap names from data/colormaps/*.rgb"""
+    return sorted([
+        f.stem                          # filename without .rgb extension
+        for f in COLORMAPS_DIR.glob("*.rgb")
+    ])
+
+def setup_cmap(name, idxlst):
+    """
+        Set colormap through NCL colormap and index
+    """
     import matplotlib.colors as mpcrs
     import numpy as np
-    rootpath=Path(__file__).parent
-    nclcmap=str(rootpath.resolve())+'/colormaps'
     
-    cmapname=name
-    f=open(nclcmap+'/'+cmapname+'.rgb','r')
+    cmapfile = f"{COLORMAPS_DIR}/{name}.rgb"
+    f = open(cmapfile, 'r')
+
     a=[]
     for line in f.readlines():
         if ('ncolors' in line):
-            clnum=int(line.split('=')[1])
+            clnum = int(line.split('=')[1])
         a.append(line)
     f.close()
-    values = [x/(valuelst[-1]-valuelst[0]) for x in valuelst]
+    # values = [x / (valuelst[-1]-valuelst[0]) for x in valuelst]
     b = a[-clnum:]
     c = []
     if ('MPL' in name or 'GMT' in name):
         for idx in idxlst:
-            if (i == 0):
+            if (idx == 0):
                 c.append(tuple(float(y) for y in [1,1,1]))
-            elif (i == 1):
+            elif (idx == 1):
                 c.append(tuple(float(y) for y in [0,0,0]))
-            elif (i == -1):
+            elif (idx == -1):
                 c.append(tuple(float(y) for y in [0.5,0.5,0.5]))
             else:
                 c.append(tuple(float(y) for y in b[idx-2].split('#', 1)[0].split()))

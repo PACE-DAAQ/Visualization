@@ -147,3 +147,76 @@ def cropIoda(iodafile, output, poly_file):
                 dst_var[:] = variable[tuple(indices)]
             else:
                 dst_var[:] = variable[:]
+    src.close()
+    dst.close()
+    return
+
+def thinIoda(inIoda, outIoda, thinning_ratio, **kwargs):
+    src = nc.Dataset(inIoda, 'r')
+    if src.dimensions['Location'].size == 0:
+        raise Exception('no obs available')
+
+    lat = src.groups['MetaData'].variables['latitude'][:].ravel()
+    lon = src.groups['MetaData'].variables['longitude'][:].ravel()
+
+    mask = np.random.uniform(size=len(lon)) > thinning_ratio
+        
+    if np.count_nonzero(mask) == 0:
+        raise Exception('no obs available in the target area')
+    else:
+        print(f'{np.count_nonzero(mask)} obs in the target area')
+
+    dst = nc.Dataset(outIoda, 'w')
+    dst.setncatts(src.__dict__)
+
+    for name, dimension in src.dimensions.items():
+        if name == 'Location':
+            dst.createDimension(name, np.count_nonzero(mask))
+        else:
+            dst.createDimension(name, len(dimension) if not dimension.isunlimited() else None)
+
+    for name, variable in src.variables.items():
+        print(f'Processing {variable}')
+        # Define the variable in the new file
+        dst_var = dst.createVariable(name, variable.datatype, variable.dimensions)
+        # Copy variable attributes
+        dst_var.setncatts(variable.__dict__)
+        if 'Location' in variable.dimensions:
+            indices = [slice(None)] * variable.ndim
+            dim_index = variable.dimensions.index('Location')
+            indices[dim_index] = mask
+            dst_var[:] = variable[tuple(indices)]
+        else:
+            dst_var[:] = variable[:]
+
+    for grp, group in src.groups.items():
+        dst_grp = dst.createGroup(grp)
+        for var, variable in src.groups[grp].variables.items():
+            print(f'Processing {grp} / {var}')
+            fill_value = variable.getncattr('_FillValue') if '_FillValue' in variable.ncattrs() else None
+
+            if fill_value is not None:
+                try:
+                    dst_var = dst_grp.createVariable(var, variable.datatype, variable.dimensions,
+                                                        fill_value=variable.datatype.type(fill_value))
+                except Exception as e:
+                    print(f"Could not set _FillValue during variable creation: {e}")
+                    dst_var = dst_grp.createVariable(var, variable.datatype, variable.dimensions)
+            else:
+                dst_var = dst_grp.createVariable(var, variable.datatype, variable.dimensions)
+
+            # Then copy remaining attributes
+            for attr in variable.ncattrs():
+                if attr != '_FillValue':
+                    dst_var.setncattr(attr, variable.getncattr(attr))
+
+            if 'Location' in variable.dimensions:
+                indices = [slice(None)] * variable.ndim
+                dim_index = variable.dimensions.index('Location')
+                indices[dim_index] = mask
+                dst_var[:] = variable[tuple(indices)]
+            else:
+                dst_var[:] = variable[:]
+    src.close()
+    dst.close()
+    return

@@ -5,7 +5,7 @@ import matplotlib.colors as mpcrs
 import cartopy.crs as ccrs
 from cartopy.mpl.ticker import LongitudeFormatter, LatitudeFormatter
 from scipy import stats
-from colormap import white_gist_earth
+from daaq.utils.colormap import white_gist_earth
 
 def plt_hist2d(dataframe, x, y, axis, save, savename, **kwargs):
     x_data = dataframe[x]

@@ -26,7 +26,7 @@ outputs/
 # =============================================================================
 # NOTEBOOKS
 # =============================================================================
-#notebooks/exploratory/     # optional — omit if team shares exploratory work
+notebooks/exploratory/     # optional — omit if team shares exploratory work
 .ipynb_checkpoints/
 */.ipynb_checkpoints/
 
