@@ -2,10 +2,10 @@
 import os
 import numpy as np
 from daaq.utils.date_tools import get_dates
-from daaq.obs_utils.ioda_tools import thinIoda
+from daaq.obs_utils.ioda_tools import IODAFile
 
-start_date = "2024101800"
-final_date = "2024113018"
+start_date = "2024110100"
+final_date = "2024110100"
 date_int = 6
 dates = get_dates(start_date, final_date, date_int)
 
@@ -13,7 +13,7 @@ obspath = "/glade/campaign/ncar/nmmm0072/Data/obs_pandac"
 obstype = "viirs_aod_db_npp"
 
 thin_ratio = 0.8
-new_obstype = f"{obstype}-thinned{str(thin_ratio).replace('.', 'p')}"
+new_obstype = f"{obstype}-thinned{str(thin_ratio).replace('.', 'p')}_test"
 
 for cdate in dates:
     print(" ", flush=True)
@@ -30,4 +30,5 @@ for cdate in dates:
         os.makedirs(outiodapath)
 
     outiodafile = f"{outiodapath}/{new_obstype}_obs_{cdate_str}.h5"
-    thinIoda(iodafile, outiodafile, thin_ratio)
+    ioda_obj = IODAFile(iodafile)
+    ioda_obj.thin(outiodafile, thinning_ratio=thin_ratio)
