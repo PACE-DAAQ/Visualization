@@ -142,7 +142,6 @@ class IODAFile:
                 for var_name in var_names:
                     if var_name not in grp.variables:
                         continue
- 
                     var = grp.variables[var_name]
                     raw = var[:]
  
@@ -360,6 +359,12 @@ class IODAFile:
             for name, var in grp.variables.items():
                 self._copy_variable(var, dgrp, name, mask)
  
+    _SKIP_ATTRS = frozenset({
+        '_FillValue', '_ChunkSizes', '_DeflateLevel', '_Shuffle',
+        '_Fletcher32', '_Storage', '_Endianness', '_NoFill',
+        '_Netcdf4Dimid', '_Netcdf4Coordinates',
+    })
+
     def _copy_variable(
         self,
         src_var: nc.Variable,
@@ -368,37 +373,68 @@ class IODAFile:
         mask: np.ndarray,
     ) -> None:
         """Create dst variable mirroring src, slicing along nlocs_dim if present."""
-        # Preserve compression / chunking where possible
+        # --- Preserve all filters ---
         filters = src_var.filters() or {}
-        zlib = filters.get("zlib", False)
-        complevel = filters.get("complevel", 4)
-        shuffle = filters.get("shuffle", False)
- 
-        fill = None
-        if "_FillValue" in src_var.ncattrs():
-            fill = src_var.getncattr("_FillValue")
- 
+
+        # --- Count kept locations up front ---
+        n_keep = int(np.count_nonzero(mask))
+
+        # --- Handle chunking, accounting for shrunk dimensions ---
+        chunking = src_var.chunking()
+        if chunking == 'contiguous':
+            chunksizes, contiguous = None, True
+        elif (
+            self.nlocs_dim in src_var.dimensions
+            and n_keep < 10_000
+        ):
+            # Small output — contiguous is simpler and faster to read
+            chunksizes, contiguous = None, True
+        else:
+            # Clamp each chunk dim to the (possibly shrunk) destination dim size
+            n_keep = int(np.count_nonzero(mask))
+            new_dim_sizes = []
+            for d, c in zip(src_var.dimensions, chunking):
+                if d == self.nlocs_dim:
+                    new_dim_sizes.append(min(c, max(n_keep, 1)))
+                else:
+                    new_dim_sizes.append(c)
+            chunksizes = tuple(new_dim_sizes)
+            contiguous = False
+
+        fill = (src_var.getncattr('_FillValue')
+                if '_FillValue' in src_var.ncattrs() else None)
+
         new_var = dst_parent.createVariable(
             name,
             src_var.dtype,
             dimensions=src_var.dimensions,
-            zlib=zlib,
-            complevel=complevel,
-            shuffle=shuffle,
+            zlib=filters.get('zlib', False),
+            complevel=filters.get('complevel', 4),
+            shuffle=filters.get('shuffle', False),
+            fletcher32=filters.get('fletcher32', False),
+            chunksizes=chunksizes,
+            contiguous=contiguous,
+            endian=src_var.endian(),
+            least_significant_digit=filters.get('least_significant_digit'),
             fill_value=fill,
         )
- 
-        # Copy attributes (skip _FillValue — handled above)
-        new_var.setncatts(
-            {k: src_var.getncattr(k) for k in src_var.ncattrs() if k != "_FillValue"}
-        )
- 
+
+        # --- Filtered attribute copy ---
+        new_var.setncatts({
+            k: src_var.getncattr(k)
+            for k in src_var.ncattrs()
+            if k not in _SKIP_ATTRS
+        })
+
+        # --- Faithful data copy with slicing ---
+        src_var.set_auto_maskandscale(False)
+        new_var.set_auto_maskandscale(False)
+
         data = src_var[:]
- 
         if self.nlocs_dim in src_var.dimensions:
             axis = src_var.dimensions.index(self.nlocs_dim)
             data = np.take(data, np.where(mask)[0], axis=axis)
- 
+
         new_var[:] = data
  
     # ------------------------------------------------------------------
@@ -446,19 +482,27 @@ class IODAFile:
         cls,
         filepaths: Sequence[Union[str, Path]],
         *,
+        cycles: Optional[Sequence] = None,   # NEW
+        cycle_col: str = "cycle",
         ignore_errors: bool = False,
         reset_index: bool = True,
         channel_index: Optional[List[int]] = None,
         **reader_kwargs,
     ) -> tuple[pd.DataFrame, dict]:
+        if cycles is not None and len(cycles) != len(filepaths):
+            raise ValueError("cycles must match filepaths in length")
+
         frames: List[pd.DataFrame] = []
         channel_meta = {}
-        for fp in filepaths:
+        for i, fp in enumerate(filepaths):
             try:
                 reader = cls(fp, **reader_kwargs)
                 if channel_index is not None:
                     reader.select_channel(channel_index)
-                frames.append(reader.load())
+                frame = reader.load()
+                if cycles is not None and not frame.empty:
+                    frame[cycle_col] = cycles[i]
+                frames.append(frame)
                 if not channel_meta:
                     channel_meta = reader.channel_meta
             except Exception as exc:
@@ -538,6 +582,8 @@ def load_ioda(
  
 def ioda_schema(filepath: Union[str, Path]) -> Dict[str, List[str]]:
     return IODAFile(filepath).schema()
+
+
  
  
 # ---------------------------------------------------------------------------
@@ -557,7 +603,13 @@ def _to_series(
             arr = raw.filled(string_fill) if hasattr(raw, "filled") else raw
         return pd.Series(arr.astype(str))
  
-    data = raw.filled(np.nan) if hasattr(raw, "filled") else np.asarray(raw)
+    if hasattr(raw, "filled"):
+        if np.issubdtype(raw.dtype, np.integer):
+            data = raw.filled(np.iinfo(raw.dtype).min)
+        else:
+            data = raw.filled(np.nan)
+    else:
+        data = np.asarray(raw)
  
     if data.ndim == 1:
         return pd.Series(data)
