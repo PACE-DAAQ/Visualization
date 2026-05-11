@@ -1,4 +1,9 @@
 # obs_utils/obs_tools.py
+import os
+from glob import glob
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple, Union, Callable
+
 import numpy as np
 import xarray as xr
 from datetime import datetime
@@ -7,6 +12,8 @@ import cartopy.crs as ccrs
 import pandas as pd
 from scipy.spatial import cKDTree
 from haversine import haversine_vector, Unit
+ 
+from daaq.obs_utils.ioda_tools import IODAFile
 
 def dataframes_matchup(
     df_left,
@@ -265,3 +272,303 @@ def modisaod_to_dataset(modisgranule):
 
     coords_dict = {'Location': np.arange(cnts)}
     return xr.Dataset(data_dict, coords=coords_dict)
+# 
+# Functions to grid the IODA dataframe into lat/lon xr.dataset
+# 
+def _is_binnable(series: pd.Series) -> bool:
+    """A column is binnable if it's numeric and not a QC-like flag."""
+    # pd.api.types handles both numpy and pandas extension dtypes
+    if not pd.api.types.is_numeric_dtype(series):
+        return False
+    # Booleans are technically numeric but we'd rather treat them as flags
+    if pd.api.types.is_bool_dtype(series):
+        return False
+    return True
+ 
+ 
+def _looks_like_qc(name: str) -> bool:
+    QC_GROUPS = ('PreQC', 'EffectiveQC')
+    return any(name.startswith(g) or name == g for g in QC_GROUPS)
+ 
+ 
+def bin_obsdf_to_grid(
+    df: pd.DataFrame,
+    lat_edges: np.ndarray,
+    lon_edges: np.ndarray,
+    *,
+    lat_col: str = 'latitude',
+    lon_col: str = 'longitude',
+    variables: Optional[Sequence[str]] = None,
+    skip_cols: Sequence[str] = (),
+    qc_pass_cols: Optional[Sequence[str]] = None,
+    qc_pass_value: int = 0,
+) -> xr.Dataset:
+    """
+    Bin per-observation values onto a lat/lon grid, storing only additive
+    statistics (sum, sum of squares, count) so results can be safely combined
+    across cycles via simple addition.
+ 
+    Means and standard deviations are *not* stored — use `compute_stats(ds)`
+    on the result (or any time-reduced version of it) to derive them.
+ 
+    QC-like columns are skipped automatically; pass them explicitly via
+    `qc_pass_cols` to also store per-cell pass *counts* (additive). Convert
+    those to pass rates in post-processing as `pass_count / count`.
+ 
+    Parameters
+    ----------
+    df : DataFrame
+        Per-observation rows, must contain `lat_col` and `lon_col`.
+    lat_edges, lon_edges : 1D arrays
+        Cell edges, monotonic increasing. Lengths NLAT+1 and NLON+1.
+        Longitudes are normalized to match `lon_edges`'s range.
+    variables : sequence of str or None
+        Columns to bin. If None, all numeric, non-QC, non-coordinate columns.
+        An explicit empty list means "bin no variables, just count/QC".
+    skip_cols : sequence of str
+        Extra columns to exclude.
+    qc_pass_cols : sequence of str or None
+        QC columns to bin as pass counts.
+    qc_pass_value : int
+        Flag value treated as "pass". Default 0.
+ 
+    Returns
+    -------
+    xr.Dataset
+        Dimensions ('lat', 'lon'). Always contains `count`. For each binned
+        variable, contains `{var}_sum` and `{var}_sumsq`. For each QC column,
+        contains `{qc_col}_pass_count`.
+    """
+    lat_edges = np.asarray(lat_edges, dtype=float)
+    lon_edges = np.asarray(lon_edges, dtype=float)
+    nlat = len(lat_edges) - 1
+    nlon = len(lon_edges) - 1
+    if nlat < 1 or nlon < 1:
+        raise ValueError("lat_edges and lon_edges must each have length >= 2.")
+ 
+    lat = df[lat_col].to_numpy()
+    lon = df[lon_col].to_numpy()
+ 
+    # Normalize longitudes into the edge range.
+    lon_min = lon_edges[0]
+    lon = ((lon - lon_min) % 360.0) + lon_min
+ 
+    in_range = (
+        (lat >= lat_edges[0]) & (lat <= lat_edges[-1]) &
+        (lon >= lon_edges[0]) & (lon <= lon_edges[-1])
+    )
+    if not in_range.all():
+        n_drop = int((~in_range).sum())
+        if n_drop:
+            print(f'[bin] dropping {n_drop} obs outside grid')
+ 
+    df_in = df.loc[in_range]
+    lat = lat[in_range]
+    lon = lon[in_range]
+ 
+    ilat = np.clip(np.digitize(lat, lat_edges) - 1, 0, nlat - 1)
+    ilon = np.clip(np.digitize(lon, lon_edges) - 1, 0, nlon - 1)
+    flat_idx = ilat * nlon + ilon
+    n_cells = nlat * nlon
+ 
+    def _bincount_2d(idx, weights=None):
+        return np.bincount(idx, weights=weights, minlength=n_cells).reshape(nlat, nlon)
+ 
+    n_bin = _bincount_2d(flat_idx).astype(np.int64)
+ 
+    # Decide which columns to bin.
+    auto_skip = {lat_col, lon_col, 'dateTime'}
+    auto_skip.update(skip_cols)
+    qc_pass_cols = list(qc_pass_cols or [])
+ 
+    if variables is None:
+        candidates = [
+            c for c in df_in.columns
+            if c not in auto_skip
+            and c not in qc_pass_cols
+            and _is_binnable(df_in[c])
+            and not _looks_like_qc(c)
+        ]
+    else:
+        # An explicit empty list means "bin no variables, just count/QC".
+        candidates = list(variables)
+ 
+    lat_centers = 0.5 * (lat_edges[:-1] + lat_edges[1:])
+    lon_centers = 0.5 * (lon_edges[:-1] + lon_edges[1:])
+ 
+    data_vars: Dict[str, Tuple[Tuple[str, str], np.ndarray]] = {
+        'count': (('lat', 'lon'), n_bin),
+    }
+
+    for col in candidates:
+        chidx = col.split('_')[-1]
+        qc_col = next((q for q in qc_pass_cols if q.endswith(f'_{chidx}')), None)
+
+        vals_full = df_in[col].to_numpy(dtype=float)
+        valid = np.isfinite(vals_full)
+        total_idx = flat_idx[valid]
+        total_count = _bincount_2d(total_idx)
+
+        if qc_col and qc_col in df_in.columns:
+            mask = valid & (df_in[qc_col].to_numpy() == qc_pass_value)
+        else:
+            mask = valid
+
+        idx = flat_idx[mask]
+        vals = vals_full[mask]
+        pass_count = _bincount_2d(idx)
+
+        data_vars[f'{col}_sum']       = (('lat', 'lon'), _bincount_2d(idx, weights=vals))
+        data_vars[f'{col}_sumsq']     = (('lat', 'lon'), _bincount_2d(idx, weights=vals * vals))
+        data_vars[f'{col}_count']     = (('lat', 'lon'), pass_count)
+        data_vars[f'{col}_total']     = (('lat', 'lon'), total_count)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            data_vars[f'{col}_pass_rate'] = (('lat', 'lon'), np.where(total_count > 0, pass_count / total_count, np.nan))
+ 
+    return xr.Dataset(
+        data_vars,
+        coords={'lat': lat_centers, 'lon': lon_centers},
+        attrs={'lat_edges': lat_edges, 'lon_edges': lon_edges},
+    )
+
+# ---------------------------------------------------------------------------
+# Time aggregation and statistics
+# ---------------------------------------------------------------------------
+ 
+# Variables in a binned/aggregated dataset that are *additive* across time.
+# Anything else (e.g. derived means/stds) should not be stored, only computed.
+_ADDITIVE_SUFFIXES = ('_sum', '_sumsq', '_pass_count')
+ 
+ 
+def _is_additive(name: str) -> bool:
+    return name == 'count' or any(name.endswith(s) for s in _ADDITIVE_SUFFIXES)
+ 
+ 
+def aggregate_total(ds: xr.Dataset, dim: str = 'time') -> xr.Dataset:
+    """
+    Reduce a per-cycle gridded dataset along `dim` by summing additive vars.
+ 
+    Counts, sums, sums-of-squares, and pass-counts are simply added across
+    time. The result has the same spatial dims with `time` collapsed.
+ 
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Output of `aggregate_ioda_cycles` (or any compatible per-cycle stack).
+    dim : str
+        Dimension to sum over. Default 'time'.
+ 
+    Returns
+    -------
+    xr.Dataset
+        Same data variables as input, with `dim` collapsed.
+    """
+    if dim not in ds.dims:
+        raise ValueError(f"Dimension '{dim}' not found in dataset (dims={list(ds.dims)}).")
+ 
+    out_vars = {}
+    for name, da in ds.data_vars.items():
+        if _is_additive(name) and dim in da.dims:
+            out_vars[name] = da.sum(dim=dim, skipna=True)
+        elif dim in da.dims:
+            # Non-additive variable along time — drop with a warning rather
+            # than silently producing garbage.
+            import warnings
+            warnings.warn(
+                f"Dropping non-additive variable '{name}' during aggregate_total; "
+                f"recompute it from sums/counts after reduction.",
+                stacklevel=2,
+            )
+        else:
+            out_vars[name] = da
+ 
+    out = xr.Dataset(out_vars, attrs=dict(ds.attrs))
+    out.attrs[f'reduced_{dim}'] = 1
+    return out
+ 
+ 
+def compute_stats(
+    ds: xr.Dataset,
+    *,
+    variables: Optional[Sequence[str]] = None,
+    ddof: int = 0,
+    pass_rate: bool = True,
+) -> xr.Dataset:
+    """
+    Derive mean / variance / std (and optionally QC pass rate) from the
+    additive sums in a binned dataset.
+ 
+    Works on either a per-cycle dataset (with `time` dim) or a time-reduced
+    one. The math is identical: `mean = sum/count`, `var = sumsq/count - mean^2`.
+ 
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Dataset containing `count` and `{var}_sum`/`{var}_sumsq` pairs.
+    variables : sequence of str or None
+        Variable base names (without suffix) to compute stats for. If None,
+        every variable with both `_sum` and `_sumsq` is included.
+    ddof : int
+        Delta degrees of freedom for variance: divisor is `count - ddof`.
+        Default 0 (population variance).
+    pass_rate : bool
+        If True, also emit `{qc_col}_pass_rate = pass_count / count` for any
+        `_pass_count` variables present.
+ 
+    Returns
+    -------
+    xr.Dataset
+        For each variable: `{var}_mean`, `{var}_var`, `{var}_std`. Plus the
+        original `count`, plus optional `{qc_col}_pass_rate`.
+    """
+    if 'count' not in ds.data_vars:
+        raise KeyError("Dataset must contain 'count'.")
+    count = ds['count'].astype(float)
+ 
+    # Discover variables if not specified.
+    if variables is None:
+        bases = set()
+        for name in ds.data_vars:
+            if name.endswith('_sum'):
+                base = name[:-len('_sum')]
+                if f'{base}_sumsq' in ds.data_vars:
+                    bases.add(base)
+        variables = sorted(bases)
+ 
+    out = xr.Dataset(coords=ds.coords, attrs=dict(ds.attrs))
+    out['count'] = ds['count']
+ 
+    safe_count = count.where(count > 0)
+ 
+    for base in variables:
+        sum_name   = f'{base}_sum'
+        sumsq_name = f'{base}_sumsq'
+        if sum_name not in ds.data_vars or sumsq_name not in ds.data_vars:
+            continue
+ 
+        s  = ds[sum_name]
+        ss = ds[sumsq_name]
+ 
+        mean = s / safe_count
+        # Population variance: E[X^2] - E[X]^2
+        var_pop = ss / safe_count - mean * mean
+        # Numerical noise can produce small negatives; clip.
+        var_pop = var_pop.where(var_pop >= 0, 0.0)
+ 
+        if ddof != 0:
+            denom = (safe_count - ddof).where(safe_count - ddof > 0)
+            var = var_pop * safe_count / denom
+        else:
+            var = var_pop
+ 
+        out[f'{base}_mean'] = mean
+        out[f'{base}_var']  = var
+        out[f'{base}_std']  = np.sqrt(var)
+ 
+    if pass_rate:
+        for name in ds.data_vars:
+            if name.endswith('_pass_count'):
+                base = name[:-len('_pass_count')]
+                out[f'{base}_pass_rate'] = ds[name] / safe_count
+ 
+    return out

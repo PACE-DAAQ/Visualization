@@ -6,7 +6,8 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mpcrs
 import cartopy.crs as ccrs
 from scipy import stats
-from daaq.utils.colormap import white_gist_earth 
+from daaq.utils.colormap import white_gist_earth
+from typing import Dict, List, Optional, Sequence, Union
 
 # --- Colorbar defaults ---
 cbar_defaults = {
@@ -554,7 +555,16 @@ def add_colorbar(fig, ax, mesh, cbar_dict=None, font_dict=None, default_label=''
 
     return cbar_obj
 
-def setupax_2dmap(ax=None, cornerlatlon=None, projection=ccrs.PlateCarree(), lbsize=20, **kwargs):
+def setupax_2dmap(
+        ax=None,
+        cornerlatlon=None,
+        projection=ccrs.PlateCarree(),
+        *,
+        figsize: tuple = (8, 4),
+        show_gridlines: bool = True,
+        gl_lbsize: int = 20,
+        # **kwargs,
+    ):
     """
     Set up a cartopy GeoAxes with coastlines, extent, and gridline labels.
 
@@ -572,7 +582,9 @@ def setupax_2dmap(ax=None, cornerlatlon=None, projection=ccrs.PlateCarree(), lbs
     
     kwargs
     ------
-    figsize
+    figsize: default (8,4)
+    show_gridlines: default True
+    gl_lbsize: default 20
 
     Returns
     -------
@@ -580,8 +592,6 @@ def setupax_2dmap(ax=None, cornerlatlon=None, projection=ccrs.PlateCarree(), lbs
     ax : cartopy GeoAxes
     gl : cartopy Gridliner
     """
-
-    figsize = kwargs.get('figsize', (8, 4))
 
     if ax is None:
         fig, ax = plt.subplots(
@@ -599,11 +609,13 @@ def setupax_2dmap(ax=None, cornerlatlon=None, projection=ccrs.PlateCarree(), lbs
         minlat, maxlat, minlon, maxlon = cornerlatlon
         ax.set_extent((minlon, maxlon, minlat, maxlat), crs=projection)
 
-    gl = ax.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False)
-    gl.right_labels = False
-    gl.top_labels = False
-    gl.xlabel_style = {'size':lbsize}
-    gl.ylabel_style = {'size':lbsize}
+    gl = None
+    if show_gridlines:
+        gl = ax.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False, zorder=2)
+        gl.right_labels = False
+        gl.top_labels = False
+        gl.xlabel_style = {'size':gl_lbsize}
+        gl.ylabel_style = {'size':gl_lbsize}
 
     return fig, ax, gl
 

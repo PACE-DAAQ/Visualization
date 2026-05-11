@@ -570,6 +570,7 @@ def load_ioda(
     *,
     groups: Optional[List[str]] = None,
     variables: Optional[Dict[str, List[str]]] = None,
+    channel_index: Optional[List[int]] = None,
     **reader_kwargs,
 ) -> pd.DataFrame:
     reader = IODAFile(filepath, **reader_kwargs)
@@ -578,7 +579,9 @@ def load_ioda(
             reader.select_variables(grp, vs)
     elif groups is not None:
         reader.select_groups(*groups)
-    return reader.load()
+    elif channel_index is not None:
+        reader.select_channel(channel_index)
+    return reader.load(), reader.channel_meta
  
 def ioda_schema(filepath: Union[str, Path]) -> Dict[str, List[str]]:
     return IODAFile(filepath).schema()
