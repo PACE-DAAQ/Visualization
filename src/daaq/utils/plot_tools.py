@@ -577,7 +577,7 @@ def setupax_2dmap(
     projection : cartopy.crs.Projection
         Used both as the axes projection (when ax is None) and as the CRS
         for `set_extent`. Default: PlateCarree.
-    lbsize : float
+    gl_lbsize : float
         Font size for gridline labels. Default 20.
     
     kwargs

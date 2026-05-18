@@ -359,11 +359,6 @@ class IODAFile:
             for name, var in grp.variables.items():
                 self._copy_variable(var, dgrp, name, mask)
  
-    _SKIP_ATTRS = frozenset({
-        '_FillValue', '_ChunkSizes', '_DeflateLevel', '_Shuffle',
-        '_Fletcher32', '_Storage', '_Endianness', '_NoFill',
-        '_Netcdf4Dimid', '_Netcdf4Coordinates',
-    })
 
     def _copy_variable(
         self,
@@ -373,6 +368,13 @@ class IODAFile:
         mask: np.ndarray,
     ) -> None:
         """Create dst variable mirroring src, slicing along nlocs_dim if present."""
+
+        _SKIP_ATTRS = frozenset({
+            '_FillValue', '_ChunkSizes', '_DeflateLevel', '_Shuffle',
+            '_Fletcher32', '_Storage', '_Endianness', '_NoFill',
+            '_Netcdf4Dimid', '_Netcdf4Coordinates',
+        })
+        
         # --- Preserve all filters ---
         filters = src_var.filters() or {}
 
