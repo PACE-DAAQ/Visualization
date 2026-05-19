@@ -134,8 +134,8 @@ def make_panels(
         sharey=sharey,
         squeeze=False,          # always 2-D array
         subplot_kw=subplot_kw,
+        gridspec_kw={"wspace": wspace, "hspace": hspace},
     )
-    fig.subplots_adjust(wspace=wspace, hspace=hspace)
  
     # flatten to a 1-D list for easy iteration
     axes_flat = ax_grid.flatten().tolist()

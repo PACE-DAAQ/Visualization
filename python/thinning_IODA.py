@@ -4,8 +4,8 @@ import numpy as np
 from daaq.utils.date_tools import get_dates
 from daaq.obs_utils.ioda_tools import IODAFile
 
-start_date = "2024110100"
-final_date = "2024110100"
+start_date = "2024100100"
+final_date = "2024101418"
 date_int = 6
 dates = get_dates(start_date, final_date, date_int)
 
@@ -13,7 +13,7 @@ obspath = "/glade/campaign/ncar/nmmm0072/Data/obs_pandac"
 obstype = "viirs_aod_db_npp"
 
 thin_ratio = 0.8
-new_obstype = f"{obstype}-thinned{str(thin_ratio).replace('.', 'p')}_test"
+new_obstype = f"{obstype}-thinned{str(thin_ratio).replace('.', 'p')}"
 
 for cdate in dates:
     print(" ", flush=True)
