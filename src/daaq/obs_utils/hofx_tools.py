@@ -62,7 +62,7 @@ def load_hofx_cycles_single(
     if not files:
         return pd.DataFrame(), []
 
-    df, _ = IODAFile.concat(files, cycles=cycles, channel_index=channel_index)
+    df, ch_meta = IODAFile.concat(files, cycles=cycles, channel_index=channel_index)
     probe_chidx = channel_index[0]
     has_precomputed = (
         f'ombg_{varname}_{probe_chidx}' in df.columns
@@ -71,7 +71,7 @@ def load_hofx_cycles_single(
     if not has_precomputed:
         df = _compute_omb_oma(df, varname, channel_index, bkg_group, ana_group)
         
-    return df, cycles
+    return df, ch_meta, cycles
 
 
 def load_hofx_cycles_paired(
